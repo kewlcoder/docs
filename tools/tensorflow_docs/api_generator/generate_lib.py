@@ -465,7 +465,7 @@ def write_docs(
     search_hints: bool = True,
     site_path: str = 'api_docs/python',
     gen_redirects: bool = True,
-    gen_report: bool = False,
+    gen_report: bool = True,
     extra_docs: Optional[Dict[int, str]] = None,
 ):
   """Write previously extracted docs to disk.
@@ -562,14 +562,13 @@ def write_docs(
     try:
       page_info = parser.docs_for_object(full_name, py_object, parser_config,
                                          extra_docs)
+      if gen_report and not full_name.startswith(
+          ('tf.compat.v', 'tf.keras.backend', 'tf.numpy',
+           'tf.experimental.numpy')):
+        api_report_obj.fill_metrics(page_info)
     except Exception as e:
       raise ValueError(
           f'Failed to generate docs for symbol: `{full_name}`') from e
-
-    if gen_report and not full_name.startswith(
-        ('tf.compat.v', 'tf.keras.backend', 'tf.numpy',
-         'tf.experimental.numpy')):
-      api_report_obj.fill_metrics(page_info)
 
     path = output_dir / parser.documentation_path(full_name)
 
@@ -791,7 +790,7 @@ class DocGenerator:
       callbacks: Optional[List[public_api.ApiFilter]] = None,
       yaml_toc: bool = True,
       gen_redirects: bool = True,
-      gen_report: bool = False,
+      gen_report: bool = True,
       extra_docs: Optional[Dict[int, str]] = None,
   ):
     """Creates a doc-generator.
@@ -800,8 +799,8 @@ class DocGenerator:
       root_title: A string. The main title for the project. Like "TensorFlow"
       py_modules: The python module to document.
       base_dir: String or tuple of strings. Directories that "Defined in" links
-        are generated relative to. **Modules outside one of these directories are
-        not documented**. No `base_dir` should be inside another.
+        are generated relative to. **Modules outside one of these directories
+        are not documented**. No `base_dir` should be inside another.
       code_url_prefix: String or tuple of strings. The prefix to add to "Defined
         in" paths. These are zipped with `base-dir`, to set the `defined_in`
         path for each file. The defined in link for `{base_dir}/path/to/file` is
@@ -957,6 +956,7 @@ class DocGenerator:
     #    {short_name}/
     #    _redirects.yaml
     #    _toc.yaml
+    #    api_report.pb
     #    index.md
     #    {short_name}.md
     #

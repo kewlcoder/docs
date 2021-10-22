@@ -18,6 +18,7 @@
 import collections
 import inspect
 import os
+import random
 import sys
 import tempfile
 import textwrap
@@ -158,9 +159,9 @@ class ParserTest(parameterized.TestCase):
       def foo(self):
         pass
 
-    string = (
-        'A `tf.reference`, a member `tf.reference.foo`, and a `tf.third`. '
-        'This is `not a symbol`, and this is `tf.not.a.real.symbol`')
+    string = ('A `@tf.reference`, a member `tf.reference.foo`, and a '
+              '`tf.third(what)`. '
+              'This is `not a symbol`, and this is `tf.not.a.real.symbol`')
 
     duplicate_of = {'tf.third': 'tf.fourth'}
     index = {
@@ -178,11 +179,11 @@ class ParserTest(parameterized.TestCase):
     result = reference_resolver.replace_references(string, '../..')
     self.assertEqual(
         'A <a href="../../tf/reference.md">'
-        '<code>tf.reference</code></a>, '
+        '<code>@tf.reference</code></a>, '
         'a member <a href="../../tf/reference.md#foo">'
         '<code>tf.reference.foo</code></a>, '
         'and a <a href="../../tf/fourth.md">'
-        '<code>tf.third</code></a>. '
+        '<code>tf.third(what)</code></a>. '
         'This is `not a symbol`, and this is '
         '`tf.not.a.real.symbol`', result)
 
@@ -280,8 +281,8 @@ class ParserTest(parameterized.TestCase):
                           [name for name, value in page_info.attr_block.items])
 
   def test_namedtuple_field_order(self):
-    namedtupleclass = collections.namedtuple('namedtupleclass',
-                                             {'z', 'y', 'x', 'w', 'v', 'u'})
+    namedtupleclass = collections.namedtuple(
+        'namedtupleclass', ['z', 'y', 'x', 'hidden', 'w', 'v', 'u'])
 
     index = {
         'namedtupleclass': namedtupleclass,
@@ -314,14 +315,16 @@ class ParserTest(parameterized.TestCase):
         py_object=namedtupleclass,
         parser_config=parser_config)
 
+    self.assertIsNone(page_info._namedtuplefields['hidden'])
+
     # Each namedtiple field has a docstring of the form:
     #   'Alias for field number ##'. These props are returned sorted.
+    def field_number(desc):
+      return int(desc.split(' ')[-1])
 
-    def sort_key(prop_info):
-      return int(prop_info.py_object.__doc__.split(' ')[-1])
-
-    self.assertSequenceEqual(page_info._properties,
-                             sorted(page_info._properties, key=sort_key))
+    self.assertSequenceEqual(
+        [0, 1, 2, 4, 5, 6],
+        [field_number(desc) for name, desc in page_info.attr_block.items])
 
   def test_docs_for_class_should_skip(self):
 

@@ -17,6 +17,7 @@
 
 import ast
 import collections
+import dataclasses
 import enum
 import functools
 import html
@@ -32,7 +33,6 @@ import typing
 from typing import Any, Dict, List, Tuple, Iterable, NamedTuple, Optional, Union
 
 import astor
-import dataclasses
 
 from tensorflow_docs.api_generator import doc_controls
 from tensorflow_docs.api_generator import doc_generator_visitor
@@ -103,25 +103,23 @@ class ParserConfig(object):
     return self.index[full_name]
 
 
+@dataclasses.dataclass
 class _FileLocation(object):
   """This class indicates that the object is defined in a regular file.
 
   This can be used for the `defined_in` slot of the `PageInfo` objects.
   """
 
-  def __init__(
-      self,
-      url: Optional[str] = None,
-      start_line: Optional[int] = None,
-      end_line: Optional[int] = None,
-  ) -> None:
-    self.url = url
-    self._start_line = start_line
-    self._end_line = end_line
+  base_url: Optional[str] = None
+  start_line: Optional[int] = None
+  end_line: Optional[int] = None
 
-    if self._start_line:
-      if 'github.com' in self.url:
-        self.url = f'{self.url}#L{self._start_line}-L{self._end_line}'
+  @property
+  def url(self) -> Optional[str]:
+    if self.start_line and self.end_line:
+      if 'github.com' in self.base_url:
+        return f'{self.base_url}#L{self.start_line}-L{self.end_line}'
+    return self.base_url
 
 
 def is_class_attr(full_name, index):
@@ -193,6 +191,9 @@ def _get_raw_docstring(py_object):
   elif get_obj_type(py_object) is not ObjType.OTHER:
     result = inspect.getdoc(py_object) or ''
   else:
+    result = ''
+
+  if result is None:
     result = ''
 
   result = _StripTODOs()(result)
@@ -306,7 +307,7 @@ AUTO_REFERENCE_RE = re.compile(
     r"""
     (?P<brackets>\[.*?\])                    # find characters inside '[]'
     |
-    `(?P<backticks>[\w\(\[\)\]\{\}.,=\s]+?)` # or find characters inside '``'
+    `(?P<backticks>@?[\w\(\[\)\]\{\}.,=\s]+?)` # or find characters inside '``'
     """,
     flags=re.VERBOSE)
 
@@ -611,7 +612,12 @@ class ReferenceResolver(object):
 
     link_text = string
 
-    string = re.sub(r'(.*)[\(\[].*', r'\1', string)
+    # Drop everything after the *last* ( or [ to get the
+    # symbol name. The last is used so complex nested or chained calls are not
+    # recognized as valid links.
+    string = re.sub(r'^(.*)[\(\[].*', r'\1', string)
+    # Drop the optional leading `@`.
+    string = re.sub(r'^@', r'', string)
 
     if string.startswith('compat.v1') or string.startswith('compat.v2'):
       string = 'tf.' + string
@@ -727,6 +733,7 @@ TEXT_TEMPLATE = textwrap.dedent("""\
   </tr>""")
 
 
+@dataclasses.dataclass
 class TitleBlock(object):
   """A class to parse title blocks (like `Args:`) and convert them to markdown.
 
@@ -768,14 +775,9 @@ class TitleBlock(object):
 
   _INDENTATION_REMOVAL_RE = re.compile(r'( *)(.+)')
 
-  def __init__(self,
-               *,
-               title: Optional[str] = None,
-               text: str,
-               items: Iterable[Tuple[str, str]]):
-    self.title = title
-    self.text = text
-    self.items = items
+  title: Optional[str]
+  text: str
+  items: Iterable[Tuple[str, str]]
 
   def _dedent_after_first_line(self, text):
     if '\n' not in text:
@@ -1688,6 +1690,12 @@ class PageInfo:
     self._aliases = None
     self._doc = None
 
+  def __eq__(self, other):
+    if isinstance(other, PageInfo):
+      return self.__dict__ == other.__dict__
+    else:
+      return NotImplemented
+
   @property
   def short_name(self):
     """Returns the documented object's short name."""
@@ -1821,7 +1829,7 @@ class TypeAliasPageInfo(PageInfo):
     self._signature = None
 
   @property
-  def signature(self) -> None:
+  def signature(self):
     return self._signature
 
   def _custom_join(self, args: List[str], origin: str) -> str:
@@ -2011,9 +2019,10 @@ class ClassPageInfo(PageInfo):
       member_info: a `MemberInfo` describing the property.
     """
     doc = member_info.doc
-    # Hide useless namedtuple docs-trings.
+    # Clarify the default namedtuple docs-strings.
     if re.match('Alias for field number [0-9]+', doc.brief):
-      doc = doc._replace(docstring_parts=[], brief='')
+      new_brief = f'A `namedtuple` {doc.brief.lower()}'
+      doc = doc._replace(docstring_parts=[], brief=new_brief)
 
     new_parts = [doc.brief]
     # Strip args/returns/raises from property
@@ -2242,8 +2251,13 @@ class ClassPageInfo(PageInfo):
       docstring_parts.append(None)
 
     attrs = collections.OrderedDict()
-    # namedtuple fields first.
-    attrs.update(self._namedtuplefields)
+    # namedtuple fields first, in order.
+    for name, desc in self._namedtuplefields.items():
+      # If a namedtuple field has been filtered out, it's description will
+      # not have been set in the `member_info` loop, so skip fields with `None`
+      # as the description.
+      if desc is not None:
+        attrs[name] = desc
     # the contents of the `Attrs:` block from the docstring
     attrs.update(raw_attrs)
 
@@ -2259,7 +2273,7 @@ class ClassPageInfo(PageInfo):
 
     if attrs:
       attribute_block = TitleBlock(
-          title='Attributes', text='', items=attrs.items())
+          title='Attributes', text='', items=list(attrs.items()))
 
     # Delete the Attrs block if it exists or delete the placeholder.
     del docstring_parts[attr_block_index]
@@ -2570,12 +2584,12 @@ def _get_defined_in(py_object: Any,
   elif re.match(r'.*_pb2\.py$', rel_path):
     # The _pb2.py files all appear right next to their defining .proto file.
     rel_path = rel_path[:-7] + '.proto'
-    return _FileLocation(url=os.path.join(code_url_prefix, rel_path))  # pylint: disable=undefined-loop-variable
+    return _FileLocation(base_url=os.path.join(code_url_prefix, rel_path))
   else:
     return _FileLocation(
-        url=os.path.join(code_url_prefix, rel_path),
+        base_url=os.path.join(code_url_prefix, rel_path),
         start_line=start_line,
-        end_line=end_line)  # pylint: disable=undefined-loop-variable
+        end_line=end_line)
 
 
 # TODO(markdaoust): This should just parse, pretty_docs should generate the md.
