@@ -8,4 +8,8 @@
 **/venv
 **/.python-version
 *.png
-
+*.csv
+*.tar.gz
+audio/data
+aclImdb
+dnn_model
